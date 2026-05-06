@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -54,6 +54,7 @@ function getWorkspaceDayItems(workspaces, ds) {
         kind: 'workspace',
         title: workspace.name || 'Workspace',
         meta: workspace.client || workspace.editor || '',
+        shootTime: workspace.shootTime || '',
         perspectiveLabel: 'Shoot date',
       });
     }
@@ -89,7 +90,7 @@ export default function AgendaView() {
   const today = new Date();
   const [calYear, setCalYear] = useState(today.getFullYear());
   const [calMonth, setCalMonth] = useState(today.getMonth());
-  const [dayModal, setDayModal] = useState(null);
+  const [dayModalDate, setDayModalDate] = useState(null);
   const [eventModalOpen, setEventModalOpen] = useState(false);
   const [editingEventId, setEditingEventId] = useState(null);
   const [form, setForm] = useState(emptyEventForm);
@@ -116,7 +117,7 @@ export default function AgendaView() {
       qc.invalidateQueries({ queryKey: ['events'] });
       setEventModalOpen(false);
       setEditingEventId(null);
-      setDayModal(null);
+      setDayModalDate(null);
       setForm(emptyEventForm());
     },
   });
@@ -124,7 +125,7 @@ export default function AgendaView() {
     mutationFn: (id) => deleteEvent(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['events'] });
-      setDayModal(null);
+      setDayModalDate(null);
     },
   });
 
@@ -174,14 +175,31 @@ export default function AgendaView() {
     return [...dayEvents, ...dayTasks, ...dayWorkspaces];
   };
 
+  const dayModalEvents = useMemo(() => {
+    if (!dayModalDate) return [];
+    return sortEventsBySchedule(events.filter((e) => e.date === dayModalDate));
+  }, [events, dayModalDate]);
+
+  const dayModalItems = useMemo(() => {
+    if (!dayModalDate) return [];
+    const dayEventItems = dayModalEvents.map((event) => ({
+      id: event._id,
+      kind: 'event',
+      event,
+    }));
+    const dayTaskItems = getTaskDayItems(tasks, dayModalDate);
+    const dayWorkspaceItems = getWorkspaceDayItems(workspaces, dayModalDate);
+    return [...dayEventItems, ...dayTaskItems, ...dayWorkspaceItems];
+  }, [dayModalDate, dayModalEvents, tasks, workspaces]);
+
   const openDayModal = (ds) => {
-    setDayModal({ date: ds, items: getDayItems(ds) });
+    setDayModalDate(ds);
   };
 
   const openCreateFromDay = (ds) => {
     setEditingEventId(null);
     setForm({ ...emptyEventForm(), dateTime: joinDateAndTimeForLocalInput(ds, '12:00') });
-    setDayModal(null);
+    setDayModalDate(null);
     setEventModalOpen(true);
   };
 
@@ -189,7 +207,7 @@ export default function AgendaView() {
     if (!isTeam) return;
     setEditingEventId(e._id);
     setForm(eventToFormState(e));
-    setDayModal(null);
+    setDayModalDate(null);
     setEventModalOpen(true);
   };
 
@@ -205,12 +223,12 @@ export default function AgendaView() {
   };
   const handleDayItemClick = (item) => {
     if (item.kind === 'task') {
-      setDayModal(null);
+      setDayModalDate(null);
       navigate(`${DASHBOARD_BASE}/taken`);
       return;
     }
     if (item.kind === 'workspace') {
-      setDayModal(null);
+      setDayModalDate(null);
       navigate(`${DASHBOARD_BASE}/workspace/${item.workspaceId || item.id}`);
     }
   };
@@ -364,6 +382,9 @@ export default function AgendaView() {
                           </span>
                           <span className="event-chip-time">
                             {item.perspectiveLabel}
+                            {item.kind === 'workspace' && item.perspectiveLabel === 'Shoot date' && item.shootTime
+                              ? ` · ${item.shootTime}`
+                              : ''}
                             {item.meta ? ` · ${item.meta}` : ''}
                           </span>
                         </span>
@@ -379,10 +400,10 @@ export default function AgendaView() {
       </div>
 
       <EventDayModal
-        date={dayModal?.date ?? null}
-        events={(dayModal?.items ?? []).filter((item) => item.kind === 'event').map((item) => item.event)}
-        items={dayModal?.items ?? []}
-        onClose={() => setDayModal(null)}
+        date={dayModalDate}
+        events={dayModalEvents}
+        items={dayModalItems}
+        onClose={() => setDayModalDate(null)}
         onAddEvent={openCreateFromDay}
         onEventClick={openEditEvent}
         onDeleteEvent={handleDeleteEvent}

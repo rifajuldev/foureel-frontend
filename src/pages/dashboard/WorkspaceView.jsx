@@ -153,7 +153,7 @@ function FaseSelect({ value, onChange }) {
 }
 
 export default function WorkspaceView() {
-  const { user } = useAuth();
+  const { user, isTeamAdmin } = useAuth();
   const { t, lang } = useLang();
   const [wsTab, setWsTab] = useState("inbox");
   const [batchId, setBatchId] = useState(null);
@@ -170,6 +170,7 @@ export default function WorkspaceView() {
     editor: "",
     projectStage: "preproduction",
     shootDate: "",
+    shootTime: "",
     deadline: "",
   });
   const [newBatchErrors, setNewBatchErrors] = useState({});
@@ -187,6 +188,9 @@ export default function WorkspaceView() {
   const [resTab, setResTab] = useState("scripts");
   const [resDraftName, setResDraftName] = useState("");
   const [resDraftNote, setResDraftNote] = useState("");
+  const [batchNotesDraft, setBatchNotesDraft] = useState("");
+  const [batchNotesStatus, setBatchNotesStatus] = useState("idle");
+  const [batchNotesError, setBatchNotesError] = useState("");
   const shotOverlayRef = useRef(null);
   const navigate = useNavigate();
   const { batchId: routeBatchId } = useParams();
@@ -199,33 +203,49 @@ export default function WorkspaceView() {
   const { data: clients = [] } = useQuery({
     queryKey: ["clients"],
     queryFn: getClients,
+    enabled: isTeamAdmin,
   });
   const { data: teamMembers = [] } = useQuery({
     queryKey: ["team"],
     queryFn: getTeamMembers,
+    enabled: isTeamAdmin,
   });
   const updateMut = useMutation({
     mutationFn: ({ wsId, subBId, vId, ...d }) =>
       updateWorkspaceVideo(wsId, subBId, vId, d),
-    onSuccess: () => qc.invalidateQueries(["workspaces"]),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
   });
   const createBatchMut = useMutation({
     mutationFn: createWorkspace,
     onSuccess: (created) => {
-      qc.invalidateQueries(["workspaces"]);
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
       if (created?._id) setBatchId(created._id);
     },
   });
   const deleteBatchMut = useMutation({
     mutationFn: deleteWorkspace,
     onSuccess: () => {
-      qc.invalidateQueries(["workspaces"]);
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
       if (batchId) setBatchId(null);
     },
   });
   const updateBatchMut = useMutation({
     mutationFn: ({ id, data }) => updateWorkspace(id, data),
-    onSuccess: () => qc.invalidateQueries(["workspaces"]),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
+  });
+  const updateBatchNotesMut = useMutation({
+    mutationFn: ({ id, notes }) => updateWorkspace(id, { notes }),
+    onSuccess: () => {
+      setBatchNotesStatus("saved");
+      setBatchNotesError("");
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: (error) => {
+      setBatchNotesStatus("error");
+      setBatchNotesError(
+        error instanceof Error ? error.message : "Failed to save batch notes.",
+      );
+    },
   });
   const addSubBatchMut = useMutation({
     mutationFn: ({ wsId, data }) => addWorkspaceBatch(wsId, data),
@@ -233,7 +253,7 @@ export default function WorkspaceView() {
       qc.setQueryData(["workspaces"], (prev = []) =>
         prev.map((w) => (w._id === ws._id ? ws : w)),
       );
-      qc.invalidateQueries(["workspaces"]);
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
     },
   });
   const deleteSubBatchMut = useMutation({
@@ -244,12 +264,25 @@ export default function WorkspaceView() {
           prev.map((w) => (w._id === ws._id ? ws : w)),
         );
       }
-      qc.invalidateQueries(["workspaces"]);
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
     },
   });
 
   const batch = batches.find((b) => b._id === batchId);
   const subBatches = batch?.batches || [];
+  useEffect(() => {
+    const nextNotes = batch?.notes || "";
+    setBatchNotesDraft(nextNotes);
+    setBatchNotesStatus("idle");
+    setBatchNotesError("");
+  }, [batchId, batch?.notes]);
+
+  useEffect(() => {
+    if (batchNotesStatus !== "saved") return undefined;
+    const timeout = setTimeout(() => setBatchNotesStatus("idle"), 1600);
+    return () => clearTimeout(timeout);
+  }, [batchNotesStatus]);
+
   const findSubBatchByVideoId = (videoId) => {
     if (!videoId) return null;
     for (const sb of subBatches) {
@@ -536,6 +569,7 @@ export default function WorkspaceView() {
     if (!newBatch.client) errors.client = "Client is required.";
     if (!newBatch.projectStage) errors.projectStage = "Phase is required.";
     if (!newBatch.shootDate) errors.shootDate = "Shoot date is required.";
+    if (!newBatch.shootTime) errors.shootTime = t("wsShootTimeRequiredError");
     if (!newBatch.deadline) errors.deadline = "Deadline is required.";
     if (!newBatch.editor) errors.editor = "Lead editor is required.";
     if (
@@ -562,6 +596,7 @@ export default function WorkspaceView() {
         shootStatus: "planned",
         deadline: newBatch.deadline,
         shootDate: newBatch.shootDate,
+        shootTime: newBatch.shootTime,
         videos: [],
       },
       {
@@ -574,6 +609,7 @@ export default function WorkspaceView() {
             editor: "",
             projectStage: "preproduction",
             shootDate: "",
+            shootTime: "",
             deadline: "",
           });
         },
@@ -589,7 +625,7 @@ export default function WorkspaceView() {
     });
     setNewVideoName("");
     setAddVideoBatchId(null);
-    qc.invalidateQueries(["workspaces"]);
+    qc.invalidateQueries({ queryKey: ["workspaces"] });
   };
 
   const createNewSubBatch = () => {
@@ -815,6 +851,21 @@ export default function WorkspaceView() {
           {newBatchErrors.shootDate && (
             <div style={{ marginTop: "6px", fontSize: "12px", color: "#c04040" }}>
               {newBatchErrors.shootDate}
+            </div>
+          )}
+        </div>
+        <div className="form-group">
+          <label className="form-label">{t("wsShootTimeLabel")}</label>
+          <input
+            type="time"
+            className="form-input"
+            style={newBatchErrors.shootTime ? { borderColor: "#c04040" } : undefined}
+            value={newBatch.shootTime}
+            onChange={(e) => updateNewBatchField("shootTime", e.target.value)}
+          />
+          {newBatchErrors.shootTime && (
+            <div style={{ marginTop: "6px", fontSize: "12px", color: "#c04040" }}>
+              {newBatchErrors.shootTime}
             </div>
           )}
         </div>
@@ -1393,10 +1444,21 @@ export default function WorkspaceView() {
     ];
 
     const setBatchField = (field, value) => {
+      if (!isTeamAdmin) return;
       updateBatchMut.mutate({ id: batch._id, data: { [field]: value } });
+    };
+    const saveBatchNotes = () => {
+      if (!isTeamAdmin || !batch?._id) return;
+      const nextNotes = batchNotesDraft.trim();
+      const currentNotes = (batch.notes || "").trim();
+      if (nextNotes === currentNotes) return;
+      setBatchNotesStatus("saving");
+      setBatchNotesError("");
+      updateBatchNotesMut.mutate({ id: batch._id, notes: nextNotes });
     };
 
     const addProjectLink = () => {
+      if (!isTeamAdmin) return;
       const label = newLink.label.trim();
       const url = newLink.url.trim();
       if (!url) return;
@@ -1406,6 +1468,7 @@ export default function WorkspaceView() {
     };
 
     const deleteProjectLink = (index) => {
+      if (!isTeamAdmin) return;
       const next = links.filter((_, i) => i !== index);
       updateBatchMut.mutate({ id: batch._id, data: { links: next } });
     };
@@ -1427,6 +1490,7 @@ export default function WorkspaceView() {
     };
 
     const deleteResourceItem = (idx) => {
+      if (!isTeamAdmin) return;
       const nextResources = {
         ...resources,
         [resTab]: activeResources.filter((_, i) => i !== idx),
@@ -1458,29 +1522,33 @@ export default function WorkspaceView() {
               </span>
             </div>
             <div className="ws-detail-actions">
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setProjectNameDraft(batch.name || "");
-                  setProjectNameError("");
-                  setShowEditProjectModal(true);
-                }}
-              >
-                ✏️ {t("wsEditProject")}
-              </button>
-              <button
-                className="btn btn-ghost btn-sm"
-                style={{ color: "#c04040", borderColor: "#e8c8c8" }}
-                onClick={() => setPendingDeleteBatch(batch)}
-              >
-                🗑️ {t("wsDeleteWorkspace")}
-              </button>
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() => setShowCreateBatchModal(true)}
-              >
-                {t("wsAddNewBatch")}
-              </button>
+              {isTeamAdmin ? (
+                <>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setProjectNameDraft(batch.name || "");
+                      setProjectNameError("");
+                      setShowEditProjectModal(true);
+                    }}
+                  >
+                    ✏️ {t("wsEditProject")}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{ color: "#c04040", borderColor: "#e8c8c8" }}
+                    onClick={() => setPendingDeleteBatch(batch)}
+                  >
+                    🗑️ {t("wsDeleteWorkspace")}
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => setShowCreateBatchModal(true)}
+                  >
+                    {t("wsAddNewBatch")}
+                  </button>
+                </>
+              ) : null}
             </div>
           </div>
 
@@ -1535,6 +1603,7 @@ export default function WorkspaceView() {
                 <select
                   className="form-select"
                   value={batch.shootStatus || "planned"}
+                  disabled={!isTeamAdmin}
                   onChange={(e) => setBatchField("shootStatus", e.target.value)}
                 >
                   <option value="wrapped">{t("wsShoot_wrapped")}</option>
@@ -1549,7 +1618,18 @@ export default function WorkspaceView() {
                   className="form-input ws-shoot-date-input"
                   type="date"
                   value={batch.shootDate || ""}
+                  disabled={!isTeamAdmin}
                   onChange={(e) => setBatchField("shootDate", e.target.value)}
+                />
+              </div>
+              <div className="ws-prop-tile">
+                <div className="ws-prop-tile-label">{t("wsShootTimeLabel")}</div>
+                <input
+                  className="form-input"
+                  type="time"
+                  value={batch.shootTime || ""}
+                  disabled={!isTeamAdmin}
+                  onChange={(e) => setBatchField("shootTime", e.target.value)}
                 />
               </div>
               <div className="ws-prop-tile">
@@ -1558,6 +1638,7 @@ export default function WorkspaceView() {
                   className="form-input ws-deadline-date-input"
                   type="date"
                   value={batch.deadline || ""}
+                  disabled={!isTeamAdmin}
                   onChange={(e) => setBatchField("deadline", e.target.value)}
                 />
               </div>
@@ -1566,6 +1647,7 @@ export default function WorkspaceView() {
                 <select
                   className="form-select"
                   value={batch.editor || ""}
+                  disabled={!isTeamAdmin}
                   onChange={(e) => setBatchField("editor", e.target.value)}
                 >
                   <option value="">{t("wsTeamPlaceholder")}</option>
@@ -1585,6 +1667,7 @@ export default function WorkspaceView() {
                 <select
                   className="form-select"
                   value={batch.projectStage || "preproduction"}
+                  disabled={!isTeamAdmin}
                   onChange={(e) =>
                     setBatchField("projectStage", e.target.value)
                   }
@@ -1601,6 +1684,7 @@ export default function WorkspaceView() {
                 <input
                   className="form-input"
                   value={batch.client || ""}
+                  disabled={!isTeamAdmin}
                   onChange={(e) => setBatchField("client", e.target.value)}
                 />
               </div>
@@ -1609,9 +1693,31 @@ export default function WorkspaceView() {
               <div className="ws-prop-tile-label">{t("wsBatchNotes")}</div>
               <textarea
                 className="ws-prop-area"
-                value={batch.notes || ""}
-                onChange={(e) => setBatchField("notes", e.target.value)}
+                value={batchNotesDraft}
+                disabled={!isTeamAdmin}
+                onChange={(e) => {
+                  setBatchNotesDraft(e.target.value);
+                  if (batchNotesStatus === "saved" || batchNotesStatus === "error") {
+                    setBatchNotesStatus("idle");
+                  }
+                }}
+                onBlur={saveBatchNotes}
               />
+              {batchNotesStatus === "saving" ? (
+                <div style={{ marginTop: "6px", fontSize: "12px", color: "var(--text-3)" }}>
+                  Saving notes...
+                </div>
+              ) : null}
+              {batchNotesStatus === "saved" ? (
+                <div style={{ marginTop: "6px", fontSize: "12px", color: "var(--sage)" }}>
+                  Notes saved.
+                </div>
+              ) : null}
+              {batchNotesStatus === "error" ? (
+                <div style={{ marginTop: "6px", fontSize: "12px", color: "#c04040" }}>
+                  {batchNotesError || "Failed to save batch notes."}
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -1689,39 +1795,43 @@ export default function WorkspaceView() {
                 >
                   {t("wsOpenLink")}
                 </a>
-                <button
-                  className="link-row-remove"
-                  onClick={() => deleteProjectLink(idx)}
-                >
-                  ✕
-                </button>
+                {isTeamAdmin ? (
+                  <button
+                    className="link-row-remove"
+                    onClick={() => deleteProjectLink(idx)}
+                  >
+                    ✕
+                  </button>
+                ) : null}
               </div>
             ))}
-            <div className="ws-link-add-row" style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-              <input
-                className="form-input"
-                style={{ maxWidth: "220px" }}
-                placeholder={t("wsLinkLabelPlaceholder")}
-                value={newLink.label}
-                onChange={(e) =>
-                  setNewLink((p) => ({ ...p, label: e.target.value }))
-                }
-              />
-              <input
-                className="form-input"
-                placeholder={t("wsLinkUrlPlaceholder")}
-                value={newLink.url}
-                onChange={(e) =>
-                  setNewLink((p) => ({ ...p, url: e.target.value }))
-                }
-              />
-              <button
-                className="btn btn-primary btn-sm ws-link-add-btn"
-                onClick={addProjectLink}
-              >
-                {t("wsAddLink")}
-              </button>
-            </div>
+            {isTeamAdmin ? (
+              <div className="ws-link-add-row" style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                <input
+                  className="form-input"
+                  style={{ maxWidth: "220px" }}
+                  placeholder={t("wsLinkLabelPlaceholder")}
+                  value={newLink.label}
+                  onChange={(e) =>
+                    setNewLink((p) => ({ ...p, label: e.target.value }))
+                  }
+                />
+                <input
+                  className="form-input"
+                  placeholder={t("wsLinkUrlPlaceholder")}
+                  value={newLink.url}
+                  onChange={(e) =>
+                    setNewLink((p) => ({ ...p, url: e.target.value }))
+                  }
+                />
+                <button
+                  className="btn btn-primary btn-sm ws-link-add-btn"
+                  onClick={addProjectLink}
+                >
+                  {t("wsAddLink")}
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <div
@@ -2226,7 +2336,7 @@ export default function WorkspaceView() {
                                     sb._id,
                                     v._id,
                                   );
-                                  qc.invalidateQueries(["workspaces"]);
+                                  qc.invalidateQueries({ queryKey: ["workspaces"] });
                                 }
                               }}
                             >
@@ -2279,13 +2389,15 @@ export default function WorkspaceView() {
                   <div className="ws-res-item-meta">
                     {item.note || item.status || "—"}
                   </div>
-                  <button
-                    type="button"
-                    className="ws-res-item-del"
-                    onClick={() => deleteResourceItem(idx)}
-                  >
-                    ✕
-                  </button>
+                  {isTeamAdmin ? (
+                    <button
+                      type="button"
+                      className="ws-res-item-del"
+                      onClick={() => deleteResourceItem(idx)}
+                    >
+                      ✕
+                    </button>
+                  ) : null}
                 </div>
               ))}
 

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../context/LangContext';
-import { getPortalMe, sendClientNote, approveVideo, requestRevision, saveQuestionnaire } from '../../api';
+import { getPortalMe, sendClientNote, saveQuestionnaire } from '../../api';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
 const MONTHS_NL = ['jan','feb','mrt','apr','mei','jun','jul','aug','sep','okt','nov','dec'];
@@ -54,9 +54,23 @@ const Q_TOPICS = [
   ]},
 ];
 
+const Q_FIELDS = Q_TOPICS.flatMap((topic) => topic.fields);
+const REQUIRED_Q_KEYS = Q_FIELDS.map((field) => field.key);
+
+function isQuestionnaireValueFilled(value, type) {
+  if (type === 'checkbox') return Array.isArray(value) && value.length > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return false;
+}
+
+function getQuestionnaireMissingKeys(answers = {}) {
+  return Q_FIELDS.filter((field) => !isQuestionnaireValueFilled(answers[field.key], field.type)).map((field) => field.key);
+}
+
 function Questionnaire({ clientName, onSubmit }) {
   const [answers, setAnswers] = useState({});
   const [submitted, setSubmitted] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const saveMut = useMutation({ mutationFn: ({a,s})=>saveQuestionnaire(a,s) });
 
   const set = (key, val) => {
@@ -65,15 +79,19 @@ function Questionnaire({ clientName, onSubmit }) {
     saveMut.mutate({a:next,s:false});
   };
 
-  const filled = Object.keys(answers).filter(k=>answers[k]&&(Array.isArray(answers[k])?answers[k].length>0:answers[k].trim())).length;
-  const pct = Math.min(100, Math.round(filled/15*100));
+  const missingKeys = getQuestionnaireMissingKeys(answers);
+  const remainingCount = missingKeys.length;
+  const totalRequired = REQUIRED_Q_KEYS.length;
+  const filled = totalRequired - remainingCount;
+  const pct = Math.min(100, Math.round((filled / totalRequired) * 100));
+  const canSubmit = remainingCount === 0;
 
   if (submitted) return (
     <div className="portal-questionnaire-success" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:'100vh',background:'var(--bg)',padding:'40px'}}>
       <div style={{fontSize:'64px',marginBottom:'20px'}}>🎉</div>
       <div style={{fontFamily:'Montserrat',fontSize:'28px',fontWeight:'700',marginBottom:'12px'}}>Vragenlijst ontvangen!</div>
       <div style={{fontSize:'15px',color:'var(--text-3)',textAlign:'center',maxWidth:'440px',marginBottom:'32px',lineHeight:'1.6'}}>Bedankt voor het invullen. Het 4REEL team gaat hiermee aan de slag en neemt snel contact met je op.</div>
-      <button onClick={onSubmit} style={{background:'var(--accent)',color:'white',border:'none',borderRadius:'10px',padding:'14px 32px',fontFamily:'Montserrat',fontSize:'15px',fontWeight:'700',cursor:'pointer'}}>Naar mijn portaal →</button>
+      <button type="button" onClick={onSubmit} style={{background:'var(--accent)',color:'white',border:'none',borderRadius:'10px',padding:'14px 32px',fontFamily:'Montserrat',fontSize:'15px',fontWeight:'700',cursor:'pointer'}}>Naar mijn portaal →</button>
     </div>
   );
 
@@ -110,21 +128,23 @@ function Questionnaire({ clientName, onSubmit }) {
               <div style={{fontFamily:'Montserrat',fontSize:'16px',fontWeight:'600',color:'white'}}>{topic.title}</div>
             </div>
             <div className="portal-questionnaire-topic-body" style={{padding:'24px 28px',display:'flex',flexDirection:'column',gap:'22px'}}>
-              {topic.fields.map(field => (
+              {topic.fields.map(field => {
+                const isInvalid = submitAttempted && missingKeys.includes(field.key);
+                return (
                 <div key={field.key}>
                   <div style={{fontSize:'13px',fontWeight:'600',color:'var(--text)',marginBottom:'8px',lineHeight:'1.5'}}>
                     {field.label}
                     {field.hint && <span style={{color:'var(--accent)',fontSize:'11px',fontWeight:'700',background:'var(--accent-pale)',padding:'1px 6px',borderRadius:'10px',marginLeft:'6px'}}>{field.hint}</span>}
                   </div>
                   {(field.type==='textarea') && (
-                    <textarea style={{width:'100%',minHeight:'90px',padding:'11px 14px',border:'1.5px solid var(--border)',borderRadius:'9px',fontFamily:'DM Sans,sans-serif',fontSize:'13px',color:'var(--text)',background:'var(--bg-alt)',outline:'none',resize:'vertical',lineHeight:'1.6',boxSizing:'border-box',transition:'border-color .15s'}}
+                    <textarea style={{width:'100%',minHeight:'90px',padding:'11px 14px',border:`1.5px solid ${isInvalid ? '#B94A48' : 'var(--border)'}`,borderRadius:'9px',fontFamily:'DM Sans,sans-serif',fontSize:'13px',color:'var(--text)',background:'var(--bg-alt)',outline:'none',resize:'vertical',lineHeight:'1.6',boxSizing:'border-box',transition:'border-color .15s'}}
                       placeholder={field.ph} value={answers[field.key]||''}
                       onChange={e=>set(field.key,e.target.value)}
                       onFocus={e=>{e.target.style.borderColor='var(--accent)';e.target.style.background='white';}}
-                      onBlur={e=>{e.target.style.borderColor='var(--border)';e.target.style.background='var(--bg-alt)';}} />
+                      onBlur={e=>{e.target.style.borderColor=isInvalid?'#B94A48':'var(--border)';e.target.style.background='var(--bg-alt)';}} />
                   )}
                   {(field.type==='email') && (
-                    <input type="email" style={{width:'100%',padding:'11px 14px',border:'1.5px solid var(--border)',borderRadius:'9px',fontFamily:'DM Sans,sans-serif',fontSize:'13px',outline:'none',background:'var(--bg-alt)',boxSizing:'border-box'}}
+                    <input type="email" style={{width:'100%',padding:'11px 14px',border:`1.5px solid ${isInvalid ? '#B94A48' : 'var(--border)'}`,borderRadius:'9px',fontFamily:'DM Sans,sans-serif',fontSize:'13px',outline:'none',background:'var(--bg-alt)',boxSizing:'border-box'}}
                       placeholder={field.ph} value={answers[field.key]||''} onChange={e=>set(field.key,e.target.value)} />
                   )}
                   {field.type==='radio' && (
@@ -133,7 +153,7 @@ function Questionnaire({ clientName, onSubmit }) {
                         const sel = answers[field.key]===opt;
                         return (
                           <label key={opt} onClick={()=>set(field.key,opt)}
-                            style={{display:'flex',alignItems:'flex-start',gap:'10px',padding:'10px 14px',border:`1.5px solid ${sel?'var(--accent)':'var(--border)'}`,borderRadius:'9px',cursor:'pointer',background:sel?'var(--accent-pale)':'var(--bg-alt)',transition:'all .15s'}}>
+                            style={{display:'flex',alignItems:'flex-start',gap:'10px',padding:'10px 14px',border:`1.5px solid ${sel?'var(--accent)':(isInvalid?'#B94A48':'var(--border)')}`,borderRadius:'9px',cursor:'pointer',background:sel?'var(--accent-pale)':'var(--bg-alt)',transition:'all .15s'}}>
                             <input type="radio" name={field.key} checked={sel} onChange={()=>{}} style={{flexShrink:0,marginTop:'2px',accentColor:'var(--accent)',width:'16px',height:'16px',cursor:'pointer'}} />
                             <span style={{fontSize:'13px',color:'var(--text)',lineHeight:'1.4'}}>{opt}</span>
                           </label>
@@ -151,7 +171,7 @@ function Questionnaire({ clientName, onSubmit }) {
                         };
                         return (
                           <label key={opt} onClick={toggle}
-                            style={{display:'flex',alignItems:'flex-start',gap:'10px',padding:'10px 14px',border:`1.5px solid ${checked?'var(--accent)':'var(--border)'}`,borderRadius:'9px',cursor:'pointer',background:checked?'var(--accent-pale)':'var(--bg-alt)',transition:'all .15s'}}>
+                            style={{display:'flex',alignItems:'flex-start',gap:'10px',padding:'10px 14px',border:`1.5px solid ${checked?'var(--accent)':(isInvalid?'#B94A48':'var(--border)')}`,borderRadius:'9px',cursor:'pointer',background:checked?'var(--accent-pale)':'var(--bg-alt)',transition:'all .15s'}}>
                             <input type="checkbox" checked={checked} onChange={()=>{}} style={{flexShrink:0,marginTop:'2px',accentColor:'var(--accent)',width:'16px',height:'16px',cursor:'pointer'}} />
                             <span style={{fontSize:'13px',color:'var(--text)',lineHeight:'1.4'}}>{opt}</span>
                           </label>
@@ -159,8 +179,14 @@ function Questionnaire({ clientName, onSubmit }) {
                       })}
                     </div>
                   )}
+                  {isInvalid && (
+                    <div style={{marginTop:'7px',fontSize:'12px',color:'#B94A48',fontWeight:'600'}}>
+                      Dit veld is verplicht.
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ))}
@@ -169,14 +195,27 @@ function Questionnaire({ clientName, onSubmit }) {
       {/* Footer */}
       <div className="portal-questionnaire-footer" style={{position:'fixed',bottom:0,left:0,right:0,background:'white',borderTop:'2px solid var(--border)',padding:'16px 32px',display:'flex',alignItems:'center',justifyContent:'space-between',zIndex:100,boxShadow:'0 -4px 20px rgba(28,20,16,.08)'}}>
         <div style={{fontSize:'12px',color:'var(--sage)',fontWeight:'600'}}>✓ Automatisch opgeslagen</div>
-        <button
-          className="portal-questionnaire-submit-btn"
-          onClick={async()=>{await saveMut.mutateAsync({a:answers,s:true});setSubmitted(true);}}
-          disabled={saveMut.isPending}
-          style={{background:'var(--accent)',color:'white',border:'none',borderRadius:'10px',padding:'14px 32px',fontFamily:'Montserrat',fontSize:'15px',fontWeight:'700',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'8px'}}>
-          {saveMut.isPending ? <LoadingSpinner size={18} /> : null}
-          <span>Vragenlijst versturen →</span>
-        </button>
+        <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'8px'}}>
+          {!canSubmit && submitAttempted && (
+            <div style={{fontSize:'12px',color:'#B94A48',fontWeight:'600'}}>
+              Vul alle velden in ({remainingCount} ontbrekend{remainingCount===1?'':'e'} antwoord{remainingCount===1?'':'en'}).
+            </div>
+          )}
+          <button
+            type="button"
+            className="portal-questionnaire-submit-btn"
+            onClick={async()=>{
+              setSubmitAttempted(true);
+              if (!canSubmit) return;
+              await saveMut.mutateAsync({a:answers,s:true});
+              setSubmitted(true);
+            }}
+            disabled={saveMut.isPending || !canSubmit}
+            style={{background:(saveMut.isPending || !canSubmit)?'var(--border)':'var(--accent)',color:'white',border:'none',borderRadius:'10px',padding:'14px 32px',fontFamily:'Montserrat',fontSize:'15px',fontWeight:'700',cursor:(saveMut.isPending || !canSubmit)?'not-allowed':'pointer',display:'inline-flex',alignItems:'center',gap:'8px'}}>
+            {saveMut.isPending ? <LoadingSpinner size={18} /> : null}
+            <span>Vragenlijst versturen →</span>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -188,15 +227,16 @@ export default function PortalClientView() {
   const { t } = useLang();
   const [logoutModalOpen, setLogoutModalOpen] = useState(false);
   const [note, setNote] = useState('');
-  const [revisionModal, setRevisionModal] = useState(null);
-  const [revisionNote, setRevisionNote] = useState('');
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
+  const [selectedArchiveWorkspaceId, setSelectedArchiveWorkspaceId] = useState(null);
   const qc = useQueryClient();
 
-  const { data, isLoading } = useQuery({ queryKey:['portalMe'], queryFn: getPortalMe, refetchInterval: 8000 });
-  const noteMut     = useMutation({ mutationFn: sendClientNote, onSuccess: ()=>{ setNote(''); qc.invalidateQueries(['portalMe']); }});
-  const approveMut  = useMutation({ mutationFn: approveVideo,   onSuccess: ()=>qc.invalidateQueries(['portalMe']) });
-  const revisionMut = useMutation({ mutationFn: ({id,n})=>requestRevision(id,n), onSuccess: ()=>{ setRevisionModal(null); setRevisionNote(''); qc.invalidateQueries(['portalMe']); }});
+  const { data, isLoading } = useQuery({
+    queryKey:['portalMe'],
+    queryFn: getPortalMe,
+    refetchInterval: showQuestionnaire ? false : 8000,
+  });
+  const noteMut     = useMutation({ mutationFn: sendClientNote, onSuccess: ()=>{ setNote(''); qc.invalidateQueries({ queryKey: ['portalMe'] }); }});
 
   useEffect(() => {
     const prevHtmlOverflow = document.documentElement.style.overflow;
@@ -219,15 +259,33 @@ export default function PortalClientView() {
     }
   }, [data]);
 
+  useEffect(() => {
+    const firstWorkspaceId = data?.workspaceArchive?.[0]?._id || null;
+    if (!firstWorkspaceId) {
+      setSelectedArchiveWorkspaceId(null);
+      return;
+    }
+    const hasCurrentSelection = data.workspaceArchive.some(
+      (workspace) => workspace._id === selectedArchiveWorkspaceId,
+    );
+    if (!hasCurrentSelection) {
+      setSelectedArchiveWorkspaceId(firstWorkspaceId);
+    }
+  }, [data?.workspaceArchive, selectedArchiveWorkspaceId]);
+
   if (isLoading) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:'var(--bg)'}}><div style={{fontFamily:'Montserrat',fontSize:'24px',fontWeight:'600',color:'var(--accent)'}}>4REEL</div></div>;
 
   if (showQuestionnaire) {
-    return <Questionnaire clientName={data?.client?.name} onSubmit={()=>{ setShowQuestionnaire(false); qc.invalidateQueries(['portalMe']); }} />;
+    return <Questionnaire clientName={data?.client?.name} onSubmit={()=>{ setShowQuestionnaire(false); qc.invalidateQueries({ queryKey: ['portalMe'] }); }} />;
   }
 
-  const { client={}, notes=[], reviewVideos=[], deliveredBatches=[], retainer } = data||{};
+  const { client={}, notes=[], reviewVideos=[], deliveredBatches=[], workspaceArchive=[], retainer } = data||{};
   const initials = (client.name||'').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   const deliveredCount = deliveredBatches.reduce((sum, batch) => sum + (batch.videos?.length || 0), 0);
+  const selectedArchiveWorkspace =
+    workspaceArchive.find((workspace) => workspace._id === selectedArchiveWorkspaceId) ||
+    workspaceArchive[0] ||
+    null;
 
   return (
     <div style={{minHeight:'100vh',background:'var(--bg)'}}>
@@ -296,6 +354,11 @@ export default function PortalClientView() {
             {reviewVideos.length > 0 && <div style={{fontSize:'12px',color:'var(--text-3)'}}>{reviewVideos.length} wacht{reviewVideos.length===1?'':'en'} op beoordeling</div>}
           </div>
           <div className="section-body">
+            {reviewVideos.length > 0 && (
+              <div style={{marginBottom:'12px',fontSize:'12px',color:'var(--text-2)',padding:'10px 12px',background:'var(--bg-alt)',border:'1px solid var(--border)',borderRadius:'8px'}}>
+                Laat feedback achter in Frame.io. Zodra je daar goedkeurt of revisie aanvraagt, werken we de status hier automatisch bij.
+              </div>
+            )}
             {reviewVideos.length === 0
               ? <div className="empty-state"><div className="emoji">✂️</div><p>Geen video's meer ter beoordeling. Kijk bij Opgeleverd voor de downloads!</p></div>
               : reviewVideos.map(v => (
@@ -308,34 +371,17 @@ export default function PortalClientView() {
                             <strong>Jouw revisienoot:</strong> {v.revisionNote}
                           </div>
                         )}
-                        {/* Inline revision form */}
-                        {revisionModal === v._id && (
-                          <div style={{marginTop:'12px'}}>
-                            <textarea value={revisionNote} onChange={e=>setRevisionNote(e.target.value)} placeholder="Beschrijf de gewenste aanpassing..." rows={3}
-                              style={{width:'100%',padding:'10px 12px',border:'1.5px solid var(--amber)',borderRadius:'8px',fontFamily:'DM Sans,sans-serif',fontSize:'13px',resize:'none',outline:'none',boxSizing:'border-box'}} />
-                            <div style={{display:'flex',gap:'8px',marginTop:'8px'}}>
-                              <button
-                                onClick={()=>revisionMut.mutate({id:v._id,n:revisionNote})}
-                                disabled={!revisionNote.trim() || revisionMut.isPending}
-                                style={{background:'var(--amber)',color:'white',border:'none',borderRadius:'7px',padding:'8px 14px',fontSize:'12px',fontWeight:'700',cursor:'pointer',fontFamily:'inherit',display:'inline-flex',alignItems:'center',gap:'8px'}}
-                              >
-                                {revisionMut.isPending ? <LoadingSpinner size={16} /> : null}
-                                <span>Verstuur revisie</span>
-                              </button>
-                              <button onClick={()=>{setRevisionModal(null);setRevisionNote('');}}
-                                style={{background:'none',border:'1px solid var(--border)',borderRadius:'7px',padding:'8px 14px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit'}}>Annuleren</button>
-                            </div>
-                          </div>
-                        )}
                       </div>
                       <span className="video-status" style={{color:v.revision?'var(--amber)':'var(--text-3)'}}>
                         {v.revision ? '✏️ Revisie gevraagd' : '⏳ Wacht op beoordeling'}
                       </span>
                     </div>
                     <div className="video-actions">
-                      {v.frameUrl && <a className="btn-watch" href={v.frameUrl} target="_blank" rel="noopener">▶ Bekijk op Frame.io</a>}
-                      <button className="btn-approve" onClick={()=>approveMut.mutate(v._id)}>✓ Goedkeuren</button>
-                      <button className="btn-revision" onClick={()=>setRevisionModal(revisionModal===v._id?null:v._id)}>✏ Revisie aanvragen</button>
+                      {v.frameUrl ? (
+                        <a className="btn-watch" href={v.frameUrl} target="_blank" rel="noopener">▶ Geef feedback in Frame.io</a>
+                      ) : (
+                        <span style={{fontSize:'11px',color:'var(--text-3)',fontStyle:'italic'}}>Frame.io link ontbreekt</span>
+                      )}
                     </div>
                   </div>
                 ))
@@ -373,6 +419,79 @@ export default function PortalClientView() {
                   </div>
                 </div>
               ))
+            )}
+          </div>
+        </div>
+
+        {/* Retainer */}
+        <div className="portal-section">
+          <div className="section-header">
+            <div className="section-title">🗂️ Workspace archief</div>
+          </div>
+          <div className="section-body">
+            {workspaceArchive.length === 0 ? (
+              <div className="empty-state">
+                <div className="emoji">📁</div>
+                <p>Nog geen workspaces beschikbaar in je archief.</p>
+              </div>
+            ) : (
+              <div className="portal-archive-layout">
+                <div className="portal-archive-workspaces">
+                  {workspaceArchive.map((workspace) => {
+                    const isActive = selectedArchiveWorkspace?._id === workspace._id;
+                    const videoCount = workspace.videos?.length || 0;
+                    return (
+                      <button
+                        key={workspace._id}
+                        type="button"
+                        className={`portal-archive-workspace-btn${isActive ? ' active' : ''}`}
+                        onClick={() => setSelectedArchiveWorkspaceId(workspace._id)}
+                      >
+                        <div className="portal-archive-workspace-top">
+                          <span>{workspace.emoji || '📁'}</span>
+                          <span>{workspace.name}</span>
+                        </div>
+                        <div className="portal-archive-workspace-meta">
+                          {videoCount} video{videoCount === 1 ? '' : "'s"}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="portal-archive-videos">
+                  <div className="portal-archive-videos-header">
+                    {selectedArchiveWorkspace?.emoji || '📁'} {selectedArchiveWorkspace?.name || 'Workspace'}
+                  </div>
+                  {selectedArchiveWorkspace?.videos?.length ? (
+                    selectedArchiveWorkspace.videos.map((video) => (
+                      <div key={video._id} className="portal-archive-video-row">
+                        <div>
+                          <div className="portal-archive-video-name">{video.name || 'Onbekende video'}</div>
+                          <div className="portal-archive-video-meta">
+                            Batch: {video.batchName || 'Onbekend'}
+                          </div>
+                        </div>
+                        <div className="portal-archive-video-actions">
+                          {video.frameUrl ? (
+                            <a href={video.frameUrl} target="_blank" rel="noopener">Bekijk op Frame.io</a>
+                          ) : null}
+                          {video.driveUrl ? (
+                            <a href={video.driveUrl} target="_blank" rel="noopener">Download via Drive</a>
+                          ) : null}
+                          {!video.frameUrl && !video.driveUrl ? (
+                            <span>Geen links beschikbaar</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-state" style={{ marginTop: '10px' }}>
+                      <div className="emoji">🎬</div>
+                      <p>Geen video's in deze workspace.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </div>

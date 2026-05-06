@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { DASHBOARD_BASE } from '../../paths';
 import { useLang } from '../../context/LangContext';
 import { useAuth } from '../../context/AuthContext';
-import { getClients, getTasks, getEvents, getActivity, createEvent, updateEvent, deleteEvent, getTeamMembers, getWorkspaces } from '../../api';
+import { getClients, getTasks, getEvents, getActivity, createEvent, updateEvent, deleteEvent, getTeamMembers, getWorkspaces, getPortalActivity } from '../../api';
 import { useState, useMemo } from 'react';
 import EventDayModal from './EventDayModal';
 import EventFormModal from '../../components/EventFormModal';
@@ -36,6 +36,13 @@ function toDateString(value) {
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) return null;
   return dStr(parsed);
+}
+function isInMonth(value, month, year) {
+  const ds = toDateString(value);
+  if (!ds) return false;
+  const dt = new Date(`${ds}T12:00:00`);
+  if (Number.isNaN(dt.getTime())) return false;
+  return dt.getMonth() === month && dt.getFullYear() === year;
 }
 function getTaskDayItems(tasks, ds) {
   return tasks
@@ -242,6 +249,44 @@ export default function HomeView() {
     queryFn: getActivity,
     enabled: isTeam,
   });
+  const {
+    data: portalActivity = [],
+    isLoading: portalActivityLoading,
+  } = useQuery({
+    queryKey: ['portal-activity'],
+    queryFn: () => getPortalActivity({ limit: 20 }),
+    enabled: isTeam,
+  });
+  const mixedActivity = useMemo(() => {
+    const teamItems = (activity || []).map((item) => ({
+      id: `team-${item._id}`,
+      text: item.text || '',
+      createdAt: item.createdAt,
+      color: item.color || 'var(--accent)',
+      isHtml: true,
+    }));
+    const clientItems = (portalActivity || []).map((item) => {
+      const dotColor =
+        item.type === 'video_revision'
+          ? 'var(--amber)'
+          : item.type === 'video_approved'
+            ? 'var(--sage)'
+            : item.type === 'questionnaire_submitted'
+              ? 'var(--blue)'
+              : 'var(--accent)';
+      const clientName = item.clientName || t('portalUnknownClient');
+      return {
+        id: `client-${item.id}`,
+        text: `${clientName}: ${item.text || t('portalClientEventFallback')}`,
+        createdAt: item.createdAt,
+        color: dotColor,
+        isHtml: false,
+      };
+    });
+    return [...teamItems, ...clientItems]
+      .filter((item) => item.createdAt && !Number.isNaN(new Date(item.createdAt).getTime()))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [activity, portalActivity, t]);
 
   const saveEventMut = useMutation({
     mutationFn: (body) => {
@@ -333,7 +378,13 @@ export default function HomeView() {
 
   const openTasks = tasks.filter(t => t.column !== 'klaar').length;
   const urgent    = clients.filter(c => c.urgent).length;
-  const shoots    = events.filter(e => { const d=new Date(e.date); return e.type==='Shoot'&&d.getMonth()===TODAY.getMonth()&&d.getFullYear()===TODAY.getFullYear(); }).length;
+  const shootsFromEvents = events.filter(
+    (event) => event.type === "Shoot" && isInMonth(event.date, TODAY.getMonth(), TODAY.getFullYear()),
+  ).length;
+  const shootsFromWorkspaces = workspaces.filter((workspace) =>
+    isInMonth(workspace.shootDate, TODAY.getMonth(), TODAY.getFullYear()),
+  ).length;
+  const shoots = shootsFromEvents + shootsFromWorkspaces;
 
   return (
     <section className="view active" id="view-home">
@@ -401,7 +452,7 @@ export default function HomeView() {
           <div className="activity-card">
             <div className="section-title" id="activity-section-title">{t('activity')}</div>
             <div id="activity-feed">
-              {activityLoading ? (
+              {activityLoading || portalActivityLoading ? (
                 Array.from({ length: 5 }).map((_, idx) => (
                   <div key={`activity-skeleton-${idx}`} className="activity-item" aria-hidden>
                     <div className="activity-dot home-skeleton-line home-skeleton-shimmer" />
@@ -412,17 +463,35 @@ export default function HomeView() {
                     <div className="activity-arrow home-skeleton-line home-skeleton-shimmer" />
                   </div>
                 ))
-              ) : activity.slice(0,8).map(a => (
-                <div key={a._id} className="activity-item">
-                  <div className="activity-dot" style={{ background: a.color || 'var(--accent)' }} />
+              ) : mixedActivity.slice(0, 12).map((item) => {
+                const itemDate = new Date(item.createdAt);
+                const isValidDate = !Number.isNaN(itemDate.getTime());
+                return (
+                <div key={item.id} className="activity-item">
+                  <div className="activity-dot" style={{ background: item.color || 'var(--accent)' }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="activity-text" dangerouslySetInnerHTML={{__html: a.text}} />
-                    <div className="activity-time">{new Date(a.createdAt).toLocaleDateString('nl-NL')}</div>
+                    {item.isHtml ? (
+                      <div className="activity-text" dangerouslySetInnerHTML={{ __html: item.text }} />
+                    ) : (
+                      <div className="activity-text">{item.text}</div>
+                    )}
+                    <div className="activity-time">
+                      {isValidDate
+                        ? itemDate.toLocaleDateString(locale, {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                          })
+                        : t('portalDateUnknown')}
+                    </div>
                   </div>
                   <div className="activity-arrow">→</div>
                 </div>
-              ))}
-              {!activityLoading && activity.length === 0 && <div className="activity-empty">Nog geen activiteit</div>}
+                );
+              })}
+              {!activityLoading && !portalActivityLoading && mixedActivity.length === 0 && (
+                <div className="activity-empty">{t('clientActivityEmpty')}</div>
+              )}
             </div>
           </div>
         </div>

@@ -25,8 +25,30 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
+  const isTeamUser = user?.role === 'team';
+  const teamAccessLevel = isTeamUser ? (user?.teamAccessLevel || 'editor') : null;
+  const isTeamAdmin = isTeamUser && teamAccessLevel === 'admin';
+  const isTeamEditor = isTeamUser && teamAccessLevel === 'editor';
+
+  const canAccessDashboardSection = (section) => {
+    if (!isTeamUser) return false;
+    if (isTeamAdmin) return true;
+    return section === 'workspace' || section === 'taken';
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, establishSession, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        establishSession,
+        logout,
+        isTeamUser,
+        isTeamAdmin,
+        isTeamEditor,
+        canAccessDashboardSection,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

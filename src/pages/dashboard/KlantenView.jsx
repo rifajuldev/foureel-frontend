@@ -16,6 +16,9 @@ import {
   getClientDocuments,
   presignClientDocumentUpload,
   createClientDocument,
+  presignPortalWhatsappUpload,
+  createPortalWhatsappMessage,
+  getPortalWhatsappMessages,
 } from '../../api';
 import { useLang } from '../../context/LangContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -44,6 +47,7 @@ const TABS = [
   { id: 'info', label: '👤 Info' },
   { id: 'portaal', label: '🌐 Portaal' },
   { id: 'documenten', label: '📄 Documenten' },
+  { id: 'whatsapp', label: '💬 WhatsApp' },
   { id: 'contacten', label: '👥 Contacten' },
   { id: 'retainer', label: '💼 Retainer' },
   { id: 'vragenlijst', label: '📋 Vragenlijst' },
@@ -781,6 +785,219 @@ function DocumentenTab({ client, lang }) {
               </a>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WhatsAppTab({ client, lang }) {
+  const qc = useQueryClient();
+  const [text, setText] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  useEffect(() => {
+    setText('');
+    setSelectedFile(null);
+    setPreviewUrl('');
+    setErrorMsg('');
+  }, [client?._id]);
+
+  useEffect(() => {
+    if (!selectedFile || !selectedFile.type?.startsWith('image/')) {
+      setPreviewUrl('');
+      return undefined;
+    }
+    const url = URL.createObjectURL(selectedFile);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [selectedFile]);
+
+  const { data: messages = [], isLoading } = useQuery({
+    queryKey: ['portalWhatsappMessages', client._id],
+    queryFn: () => getPortalWhatsappMessages(client._id),
+    enabled: !!client?._id,
+  });
+
+  const submitMut = useMutation({
+    mutationFn: async () => {
+      const trimmedText = text.trim();
+      if (!trimmedText && !selectedFile) {
+        throw new Error(lang === 'en' ? 'Add text or select an image first.' : 'Voeg eerst tekst toe of selecteer een afbeelding.');
+      }
+
+      const attachments = [];
+      if (selectedFile) {
+        const presign = await presignPortalWhatsappUpload(client._id, {
+          filename: selectedFile.name,
+          contentType: selectedFile.type || 'application/octet-stream',
+          sizeBytes: selectedFile.size,
+        });
+
+        const uploadRes = await fetch(presign.uploadUrl, {
+          method: presign.method || 'PUT',
+          headers: { 'Content-Type': presign.contentType || selectedFile.type || 'application/octet-stream' },
+          body: selectedFile,
+        });
+        if (!uploadRes.ok) {
+          throw new Error(lang === 'en' ? 'Image upload failed.' : 'Uploaden van afbeelding is mislukt.');
+        }
+
+        attachments.push({
+          key: presign.key,
+          url: presign.fileUrl,
+          name: selectedFile.name,
+          contentType: selectedFile.type || undefined,
+          sizeBytes: selectedFile.size,
+        });
+      }
+
+      return createPortalWhatsappMessage(client._id, {
+        text: trimmedText,
+        attachments,
+      });
+    },
+    onSuccess: () => {
+      setText('');
+      setSelectedFile(null);
+      setErrorMsg('');
+      qc.invalidateQueries({ queryKey: ['portalWhatsappMessages', client._id] });
+    },
+    onError: (e) => {
+      setErrorMsg(e.message || (lang === 'en' ? 'Could not save WhatsApp item.' : 'WhatsApp-item kon niet worden opgeslagen.'));
+    },
+  });
+
+  return (
+    <div style={{ padding: '12px 0' }}>
+      <div
+        style={{
+          border: '1.5px dashed var(--border)',
+          borderRadius: '10px',
+          background: 'var(--bg-alt)',
+          padding: '14px',
+          marginBottom: '14px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+        }}
+      >
+        <textarea
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setErrorMsg('');
+          }}
+          rows={3}
+          placeholder={lang === 'en' ? 'Optional context/message for Paolo WhatsApp item…' : 'Optionele context/bericht voor Paolo WhatsApp-item…'}
+          style={{
+            width: '100%',
+            padding: '10px 12px',
+            border: '1.5px solid var(--border)',
+            borderRadius: '9px',
+            fontFamily: 'DM Sans,sans-serif',
+            fontSize: '13px',
+            resize: 'vertical',
+            outline: 'none',
+            boxSizing: 'border-box',
+          }}
+        />
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => {
+              setSelectedFile(e.target.files?.[0] || null);
+              setErrorMsg('');
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => submitMut.mutate()}
+            disabled={submitMut.isPending}
+            style={submitMut.isPending ? { display: 'inline-flex', alignItems: 'center', gap: '8px' } : undefined}
+          >
+            {submitMut.isPending ? (
+              <>
+                <LoadingSpinner size={16} />
+                <span>{lang === 'en' ? 'Saving…' : 'Opslaan…'}</span>
+              </>
+            ) : (
+              lang === 'en' ? 'Save WhatsApp item' : 'WhatsApp-item opslaan'
+            )}
+          </button>
+        </div>
+        {selectedFile && (
+          <div
+            style={{
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              background: 'white',
+              padding: '10px 12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              minWidth: 0,
+            }}
+          >
+            {previewUrl ? (
+              <img
+                src={previewUrl}
+                alt={selectedFile.name}
+                style={{ width: '42px', height: '42px', objectFit: 'cover', borderRadius: '6px', border: '1px solid var(--border)' }}
+              />
+            ) : null}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {selectedFile.name}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-3)' }}>{fmtFileSize(selectedFile.size)}</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {errorMsg && (
+        <p role="alert" style={{ ...fieldErrStyle, marginBottom: '12px' }}>
+          {errorMsg}
+        </p>
+      )}
+
+      {isLoading ? (
+        <div style={{ fontSize: '13px', color: 'var(--text-3)' }}>{lang === 'en' ? 'Loading WhatsApp items…' : 'WhatsApp-items laden…'}</div>
+      ) : messages.length === 0 ? (
+        <div style={{ fontSize: '13px', color: 'var(--text-3)', fontStyle: 'italic' }}>
+          {lang === 'en' ? 'No WhatsApp items yet.' : 'Nog geen WhatsApp-items.'}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {messages.map((msg) => {
+            const firstAttachment = Array.isArray(msg.attachments) ? msg.attachments[0] : null;
+            return (
+              <div
+                key={msg._id}
+                style={{
+                  background: 'var(--bg-alt)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '8px',
+                  padding: '10px 12px',
+                }}
+              >
+                <div style={{ fontSize: '11px', color: 'var(--text-3)', marginBottom: '6px' }}>
+                  {msg.author || '—'} · {msg.createdAt ? new Date(msg.createdAt).toLocaleDateString(lang === 'en' ? 'en-GB' : 'nl-NL') : '—'}
+                </div>
+                {msg.text ? <div style={{ fontSize: '13px', marginBottom: firstAttachment ? '8px' : 0 }}>{msg.text}</div> : null}
+                {firstAttachment ? (
+                  <a href={firstAttachment.url} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">
+                    {lang === 'en' ? 'Open screenshot' : 'Screenshot openen'}
+                  </a>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1773,6 +1990,7 @@ export default function KlantenView() {
             )}
             {tab === 'portaal' && <PortaalTab client={c} />}
             {tab === 'documenten' && <DocumentenTab client={c} lang={lang} />}
+            {tab === 'whatsapp' && <WhatsAppTab client={c} lang={lang} />}
             {tab === 'retainer' && <RetainerTab client={c} onSave={saveClient} />}
             {tab === 'contacten' && (
               <div style={{ padding: '12px 0' }}>

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { DndContext, closestCenter, DragOverlay, useDroppable, MouseSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
-import { useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { arrayMove, useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { getTasks, getClients, getTeamMembers, createTask, updateTask, archiveTask } from '../../api';
+import { getTasks, getClients, getTeamMembers, createTask, updateTask, reorderTasks, archiveTask } from '../../api';
+import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../context/LangContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
 
@@ -14,6 +15,8 @@ const TAKEN_CARD_SKEL_TITLE_W = ['92%', '78%', '84%', '68%', '88%', '72%'];
 const TAKEN_COL_SKEL_COUNTS = { todo: 3, bezig: 2, review: 2, klaar: 3 };
 const TASK_TITLE_MAX_LEN = 200;
 const VALID_TASK_PRIORITIES = new Set(['High', 'Normal', 'Low']);
+const COLUMN_INDEX = Object.fromEntries(COLS.map((col, idx) => [col.id, idx]));
+const LINK_URL_REGEX = /^https?:\/\//i;
 
 const newTaskErrBorder = {
   borderColor: 'var(--accent)',
@@ -272,6 +275,7 @@ function TaskCard({
   onAssigneeChange,
   onDueDateChange,
   onCancelQuickEdit,
+  allowQuickEdit = false,
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task._id });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 };
@@ -297,7 +301,7 @@ function TaskCard({
         onAssigneeChange={onAssigneeChange}
         onDueDateChange={onDueDateChange}
         onCancelQuickEdit={onCancelQuickEdit}
-        allowQuickEdit
+        allowQuickEdit={allowQuickEdit}
       />
     </div>
   );
@@ -318,6 +322,7 @@ function KanbanColumn({ columnId, title, count, children }) {
 
 export default function TakenView() {
   const { t } = useLang();
+  const { isTeamAdmin, isTeamUser, user } = useAuth();
   const sensors = useSensors(
     useSensor(MouseSensor, {
       activationConstraint: { distance: 6 },
@@ -343,7 +348,15 @@ export default function TakenView() {
     assignee: '',
     dueDate: '',
     priority: 'Normal',
+    description: '',
+    checklist: [],
+    links: [],
+    comments: [],
   });
+  const [taskLinkDraft, setTaskLinkDraft] = useState({ label: '', url: '' });
+  const [taskChecklistDraft, setTaskChecklistDraft] = useState('');
+  const [taskCommentDraft, setTaskCommentDraft] = useState('');
+  const [taskLinkError, setTaskLinkError] = useState('');
   const [form, setForm] = useState({
     title: '',
     assignee: '',
@@ -416,8 +429,38 @@ export default function TakenView() {
       assignee: taskModal.assignee || '',
       dueDate: taskModal.dueDate || '',
       priority: taskModal.priority || 'Normal',
+      description: typeof taskModal.description === 'string' ? taskModal.description : '',
+      checklist: Array.isArray(taskModal.checklist)
+        ? taskModal.checklist
+            .map((item) => ({
+              text: typeof item?.text === 'string' ? item.text : '',
+              done: Boolean(item?.done),
+            }))
+            .filter((item) => item.text.trim())
+        : [],
+      links: Array.isArray(taskModal.links)
+        ? taskModal.links
+            .map((item) => ({
+              label: typeof item?.label === 'string' ? item.label : '',
+              url: typeof item?.url === 'string' ? item.url : '',
+            }))
+            .filter((item) => item.url.trim())
+        : [],
+      comments: Array.isArray(taskModal.comments)
+        ? taskModal.comments
+            .map((item) => ({
+              author: typeof item?.author === 'string' ? item.author : '',
+              text: typeof item?.text === 'string' ? item.text : '',
+              createdAt: item?.createdAt || new Date().toISOString(),
+            }))
+            .filter((item) => item.text.trim())
+        : [],
     });
     setTaskEditErrors({});
+    setTaskLinkDraft({ label: '', url: '' });
+    setTaskChecklistDraft('');
+    setTaskCommentDraft('');
+    setTaskLinkError('');
   }, [taskModal, clients]);
 
   const assigneeLookup = useMemo(() => buildAssigneeLookup(teamMembers), [teamMembers]);
@@ -481,10 +524,27 @@ export default function TakenView() {
       qc.invalidateQueries({ queryKey: ['tasks'] });
     },
   });
+  const reorderMut = useMutation({
+    mutationFn: ({ payload }) => reorderTasks(payload),
+    onMutate: async ({ optimisticTasks }) => {
+      await qc.cancelQueries({ queryKey: ['tasks'] });
+      const previousTasks = qc.getQueryData(['tasks']) || [];
+      qc.setQueryData(['tasks'], optimisticTasks);
+      return { previousTasks };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previousTasks) {
+        qc.setQueryData(['tasks'], context.previousTasks);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
   const createMut = useMutation({
     mutationFn: createTask,
     onSuccess: () => {
-      qc.invalidateQueries(['tasks']);
+      qc.invalidateQueries({ queryKey: ['tasks'] });
       setNewModal(false);
       setNewTaskErrors({});
       setForm({
@@ -544,7 +604,21 @@ export default function TakenView() {
     },
   });
 
-  const filtered = filter === 'all' ? tasks : tasks.filter((x) => x.assignee === filter);
+  const orderedTasks = useMemo(() => [...tasks].sort((a, b) => {
+    const colA = COLUMN_INDEX[a.column] ?? Number.MAX_SAFE_INTEGER;
+    const colB = COLUMN_INDEX[b.column] ?? Number.MAX_SAFE_INTEGER;
+    if (colA !== colB) return colA - colB;
+    const aHasOrder = Number.isFinite(a.sortOrder);
+    const bHasOrder = Number.isFinite(b.sortOrder);
+    if (aHasOrder && bHasOrder && a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    if (aHasOrder !== bHasOrder) return aHasOrder ? -1 : 1;
+    const createdA = new Date(a.createdAt || 0).getTime();
+    const createdB = new Date(b.createdAt || 0).getTime();
+    if (createdA !== createdB) return createdA - createdB;
+    return String(a._id).localeCompare(String(b._id));
+  }), [tasks]);
+
+  const filtered = filter === 'all' ? orderedTasks : orderedTasks.filter((x) => x.assignee === filter);
 
   const handleDragEnd = ({ active, over }) => {
     scheduleClearSuppressTaskCardClick();
@@ -552,22 +626,99 @@ export default function TakenView() {
       setActiveId(null);
       return;
     }
-    let nextCol = null;
+    const activeIdStr = String(active.id);
     const overId = String(over.id);
+    const activeTaskItem = orderedTasks.find((t) => t._id === activeIdStr);
+    if (!activeTaskItem) {
+      setActiveId(null);
+      return;
+    }
+
+    let destinationColumn = null;
     if (COLS.some((c) => c.id === overId)) {
-      nextCol = overId;
+      destinationColumn = overId;
     } else {
-      const overTask = filtered.find((t) => t._id === overId) || tasks.find((t) => t._id === overId);
-      nextCol = overTask?.column || null;
+      const overTask = orderedTasks.find((t) => t._id === overId);
+      destinationColumn = overTask?.column || null;
     }
-    const activeTaskItem = tasks.find((t) => t._id === active.id);
-    if (nextCol && activeTaskItem?.column !== nextCol) {
-      updateMut.mutate({ id: active.id, column: nextCol });
+    if (!destinationColumn) {
+      setActiveId(null);
+      return;
     }
+
+    const columnTaskIds = COLS.reduce((acc, col) => {
+      acc[col.id] = orderedTasks.filter((task) => task.column === col.id).map((task) => task._id);
+      return acc;
+    }, {});
+
+    const sourceColumn = activeTaskItem.column;
+    const sourceIds = [...(columnTaskIds[sourceColumn] || [])];
+    const destinationIds = sourceColumn === destinationColumn
+      ? sourceIds
+      : [...(columnTaskIds[destinationColumn] || [])];
+
+    const sourceIndex = sourceIds.indexOf(activeIdStr);
+    if (sourceIndex === -1) {
+      setActiveId(null);
+      return;
+    }
+
+    if (sourceColumn === destinationColumn) {
+      if (overId === destinationColumn) {
+        const movedToEnd = [...sourceIds];
+        movedToEnd.splice(sourceIndex, 1);
+        movedToEnd.push(activeIdStr);
+        columnTaskIds[sourceColumn] = movedToEnd;
+      } else {
+        const overIndex = sourceIds.indexOf(overId);
+        if (overIndex === -1 || overIndex === sourceIndex) {
+          setActiveId(null);
+          return;
+        }
+        columnTaskIds[sourceColumn] = arrayMove(sourceIds, sourceIndex, overIndex);
+      }
+    } else {
+      sourceIds.splice(sourceIndex, 1);
+      const overIndex = destinationIds.indexOf(overId);
+      const insertIndex = overId === destinationColumn || overIndex < 0 ? destinationIds.length : overIndex;
+      destinationIds.splice(insertIndex, 0, activeIdStr);
+      columnTaskIds[sourceColumn] = sourceIds;
+      columnTaskIds[destinationColumn] = destinationIds;
+    }
+
+    const sortLookup = {};
+    COLS.forEach((col) => {
+      (columnTaskIds[col.id] || []).forEach((taskId, index) => {
+        sortLookup[taskId] = { column: col.id, sortOrder: index + 1 };
+      });
+    });
+
+    const optimisticTasks = orderedTasks.map((task) => {
+      const next = sortLookup[task._id];
+      if (!next) return task;
+      return { ...task, column: next.column, sortOrder: next.sortOrder };
+    });
+
+    const touchedColumns = sourceColumn === destinationColumn
+      ? { [sourceColumn]: columnTaskIds[sourceColumn] }
+      : {
+          [sourceColumn]: columnTaskIds[sourceColumn],
+          [destinationColumn]: columnTaskIds[destinationColumn],
+        };
+
+    reorderMut.mutate({
+      payload: {
+        movedTaskId: activeIdStr,
+        destinationColumn,
+        columnTaskIds: touchedColumns,
+      },
+      optimisticTasks,
+    });
+
     setActiveId(null);
   };
 
-  const activeTask = tasks.find((x) => x._id === activeId);
+  const activeTask = orderedTasks.find((x) => x._id === activeId);
 
   useEffect(() => {
     const boardEl = boardRef.current;
@@ -598,6 +749,48 @@ export default function TakenView() {
     const target = columns[idx];
     if (!target) return;
     target.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
+  };
+
+  const addTaskLink = () => {
+    const url = taskLinkDraft.url.trim();
+    const label = taskLinkDraft.label.trim();
+    if (!LINK_URL_REGEX.test(url)) {
+      setTaskLinkError(t('taskLinkUrlInvalid'));
+      return;
+    }
+    setTaskEditForm((prev) => ({
+      ...prev,
+      links: [...prev.links, { label: label || url, url }],
+    }));
+    setTaskLinkDraft({ label: '', url: '' });
+    setTaskLinkError('');
+  };
+
+  const addChecklistItem = () => {
+    const text = taskChecklistDraft.trim();
+    if (!text) return;
+    setTaskEditForm((prev) => ({
+      ...prev,
+      checklist: [...prev.checklist, { text, done: false }],
+    }));
+    setTaskChecklistDraft('');
+  };
+
+  const addTaskComment = () => {
+    const text = taskCommentDraft.trim();
+    if (!text) return;
+    setTaskEditForm((prev) => ({
+      ...prev,
+      comments: [
+        ...prev.comments,
+        {
+          author: user?.name || 'Team',
+          text,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }));
+    setTaskCommentDraft('');
   };
 
   return (
@@ -687,6 +880,7 @@ export default function TakenView() {
                           setQuickEditTaskId(null);
                           setQuickEditField(null);
                         }}
+                        allowQuickEdit={isTeamAdmin}
                       />
                     ))}
                     {col.id === 'todo' && (
@@ -735,189 +929,410 @@ export default function TakenView() {
 
       {taskModal && (
         <div className="modal-overlay open" onClick={() => setTaskModal(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal task-detail-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">{taskModal.title}</div>
               <button type="button" className="modal-close" onClick={() => setTaskModal(null)}>✕</button>
             </div>
             <div className="modal-body">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
-                <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Klant</div>
-                  <select
-                    className="form-input"
-                    value={taskEditForm.clientId}
-                    onChange={(e) => {
-                      setTaskEditForm((prev) => ({ ...prev, clientId: e.target.value }));
-                      setTaskEditErrors((prev) => {
-                        if (!prev.clientId) return prev;
-                        const next = { ...prev };
-                        delete next.clientId;
-                        return next;
-                      });
-                    }}
-                    style={taskEditErrors.clientId ? newTaskErrBorder : undefined}
-                    aria-invalid={Boolean(taskEditErrors.clientId)}
-                    aria-describedby={taskEditErrors.clientId ? 'task-edit-client-err' : undefined}
-                  >
-                    {clients.map((c) => (
-                      <option key={c._id} value={c._id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  {taskEditErrors.clientId ? (
-                    <div id="task-edit-client-err" className="form-field-error" role="alert">
-                      {taskEditErrors.clientId}
+              <div className="task-modal-layout">
+                <div className="task-modal-main">
+                  <div className="task-info-grid" style={{ gap: '10px', marginBottom: '20px' }}>
+                    <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
+                      <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Klant</div>
+                      {isTeamAdmin ? (
+                        <select
+                          className="form-input"
+                          value={taskEditForm.clientId}
+                          onChange={(e) => {
+                            setTaskEditForm((prev) => ({ ...prev, clientId: e.target.value }));
+                            setTaskEditErrors((prev) => {
+                              if (!prev.clientId) return prev;
+                              const next = { ...prev };
+                              delete next.clientId;
+                              return next;
+                            });
+                          }}
+                          style={taskEditErrors.clientId ? newTaskErrBorder : undefined}
+                          aria-invalid={Boolean(taskEditErrors.clientId)}
+                          aria-describedby={taskEditErrors.clientId ? 'task-edit-client-err' : undefined}
+                        >
+                          {clients.map((c) => (
+                            <option key={c._id} value={c._id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="form-input" style={{ display: 'flex', alignItems: 'center', opacity: 0.85 }}>
+                          {taskModal.client || '—'}
+                        </div>
+                      )}
+                      {taskEditErrors.clientId ? (
+                        <div id="task-edit-client-err" className="form-field-error" role="alert">
+                          {taskEditErrors.clientId}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
+                      <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Toegewezen</div>
+                      {isTeamAdmin ? (
+                        <select
+                          className="form-input"
+                          value={taskEditForm.assignee}
+                          onChange={(e) => setTaskEditForm((prev) => ({ ...prev, assignee: e.target.value }))}
+                        >
+                          {teamMembers.map((m) => (
+                            <option key={m._id || m.name} value={m.name}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="form-input" style={{ display: 'flex', alignItems: 'center', opacity: 0.85 }}>
+                          {taskModal.assignee || '—'}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
+                      <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Deadline</div>
+                      {isTeamAdmin ? (
+                        <input
+                          type="date"
+                          className="form-input"
+                          value={taskEditForm.dueDate}
+                          onChange={(e) => {
+                            setTaskEditForm((prev) => ({ ...prev, dueDate: e.target.value }));
+                            setTaskEditErrors((prev) => {
+                              if (!prev.dueDate) return prev;
+                              const next = { ...prev };
+                              delete next.dueDate;
+                              return next;
+                            });
+                          }}
+                          style={taskEditErrors.dueDate ? newTaskErrBorder : undefined}
+                          aria-invalid={Boolean(taskEditErrors.dueDate)}
+                          aria-describedby={taskEditErrors.dueDate ? 'task-edit-due-err' : undefined}
+                        />
+                      ) : (
+                        <div className="form-input" style={{ display: 'flex', alignItems: 'center', opacity: 0.85 }}>
+                          {taskModal.dueDate || '—'}
+                        </div>
+                      )}
+                      {taskEditErrors.dueDate ? (
+                        <div id="task-edit-due-err" className="form-field-error" role="alert">
+                          {taskEditErrors.dueDate}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
+                      <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Prioriteit</div>
+                      {isTeamAdmin ? (
+                        <select
+                          className="form-input"
+                          value={taskEditForm.priority}
+                          onChange={(e) => setTaskEditForm((prev) => ({ ...prev, priority: e.target.value }))}
+                        >
+                          <option value="High">{t('taskPriorityHigh')}</option>
+                          <option value="Normal">{t('taskPriorityNormal')}</option>
+                          <option value="Low">{t('taskPriorityLow')}</option>
+                        </select>
+                      ) : (
+                        <div className="form-input" style={{ display: 'flex', alignItems: 'center', opacity: 0.85 }}>
+                          {taskModal.priority || t('taskPriorityNormal')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="task-modal-section">
+                    <div className="task-modal-section-title">{t('taskDescriptionLabel')}</div>
+                    {isTeamUser ? (
+                      <textarea
+                        className="form-input"
+                        rows={4}
+                        value={taskEditForm.description}
+                        onChange={(e) => setTaskEditForm((prev) => ({ ...prev, description: e.target.value }))}
+                        placeholder={t('taskDescriptionPlaceholder')}
+                        style={{ width: '100%', resize: 'vertical' }}
+                      />
+                    ) : (
+                      <div className="task-section-box">
+                        {taskEditForm.description || t('taskDescriptionEmpty')}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="task-modal-section">
+                    <div className="task-modal-section-head">
+                      <div className="task-modal-section-title">{t('taskLinksLabel')}</div>
+                    </div>
+                    {taskEditForm.links.length > 0 ? (
+                      <div className="task-link-list">
+                        {taskEditForm.links.map((link, index) => (
+                          <div key={`${link.url}-${index}`} className="task-link-item">
+                            <a href={link.url} target="_blank" rel="noreferrer" className="task-link-anchor">
+                              {link.label || link.url}
+                            </a>
+                            {isTeamUser ? (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                onClick={() =>
+                                  setTaskEditForm((prev) => ({
+                                    ...prev,
+                                    links: prev.links.filter((_, i) => i !== index),
+                                  }))
+                                }
+                              >
+                                {t('remove')}
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="task-section-empty">{t('taskLinksEmpty')}</div>
+                    )}
+                    {isTeamUser ? (
+                      <div className="task-inline-form">
+                        <input
+                          className="form-input"
+                          value={taskLinkDraft.label}
+                          onChange={(e) => setTaskLinkDraft((prev) => ({ ...prev, label: e.target.value }))}
+                          placeholder={t('taskLinkLabelPlaceholder')}
+                        />
+                        <input
+                          className="form-input"
+                          value={taskLinkDraft.url}
+                          onChange={(e) => {
+                            setTaskLinkDraft((prev) => ({ ...prev, url: e.target.value }));
+                            if (taskLinkError) setTaskLinkError('');
+                          }}
+                          placeholder={t('taskLinkUrlPlaceholder')}
+                        />
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={addTaskLink}>
+                          {t('taskAddLink')}
+                        </button>
+                      </div>
+                    ) : null}
+                    {taskLinkError ? <div className="form-field-error">{taskLinkError}</div> : null}
+                  </div>
+
+                  <div className="task-modal-section">
+                    <div className="task-modal-section-head">
+                      <div className="task-modal-section-title">
+                        {t('taskChecklistLabel')} ({taskEditForm.checklist.filter((item) => item.done).length}/{taskEditForm.checklist.length})
+                      </div>
+                      {isTeamUser && taskEditForm.checklist.length === 0 ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() =>
+                            setTaskEditForm((prev) => ({
+                              ...prev,
+                              checklist: [{ text: t('taskChecklistDefaultItem'), done: false }],
+                            }))
+                          }
+                        >
+                          {t('taskChecklistCreate')}
+                        </button>
+                      ) : null}
+                    </div>
+                    {taskEditForm.checklist.length > 0 ? (
+                      <div style={{ marginBottom: '10px' }}>
+                        {taskEditForm.checklist.map((item, i) => (
+                          <label key={`${item.text}-${i}`} className={`checklist-item${item.done ? ' checked' : ''}`}>
+                            <input
+                              type="checkbox"
+                              checked={item.done}
+                              onChange={(e) =>
+                                setTaskEditForm((prev) => ({
+                                  ...prev,
+                                  checklist: prev.checklist.map((checkItem, idx) =>
+                                    idx === i ? { ...checkItem, done: e.target.checked } : checkItem,
+                                  ),
+                                }))
+                              }
+                              style={{ display: 'none' }}
+                            />
+                            <span className="check-box">{item.done ? '✓' : ''}</span>
+                            <span className="check-text">{item.text}</span>
+                            {isTeamUser ? (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={{ marginLeft: 'auto' }}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setTaskEditForm((prev) => ({
+                                    ...prev,
+                                    checklist: prev.checklist.filter((_, idx) => idx !== i),
+                                  }));
+                                }}
+                              >
+                                {t('remove')}
+                              </button>
+                            ) : null}
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="task-section-empty">{t('taskChecklistEmpty')}</div>
+                    )}
+                    {isTeamUser ? (
+                      <div className="task-inline-form">
+                        <input
+                          className="form-input"
+                          value={taskChecklistDraft}
+                          onChange={(e) => setTaskChecklistDraft(e.target.value)}
+                          placeholder={t('taskChecklistItemPlaceholder')}
+                        />
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={addChecklistItem}>
+                          {t('taskChecklistAddItem')}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '10px' }}>{t('taskMoveToLabel')}</div>
+                    {isTeamAdmin ? (
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {COLS.map((col) => (
+                          <button
+                            key={col.id}
+                            type="button"
+                            className={`btn btn-sm ${taskModal.column === col.id ? 'btn-primary' : 'btn-ghost'}`}
+                            onClick={() => {
+                              updateMut.mutate({ id: taskModal._id, column: col.id });
+                              setTaskModal({ ...taskModal, column: col.id });
+                            }}
+                          >
+                            {t(col.id)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="form-input" style={{ width: 'fit-content', minWidth: '120px', display: 'flex', alignItems: 'center', opacity: 0.85 }}>
+                        {t(taskModal.column || 'todo')}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <aside className="task-modal-comments">
+                  <div className="task-modal-section-title">{t('taskCommentsLabel')}</div>
+                  {taskEditForm.comments.length ? (
+                    <div className="task-comment-list">
+                      {taskEditForm.comments.map((comment, index) => (
+                        <div key={`${comment.author}-${comment.createdAt}-${index}`} className="task-comment-item">
+                          <div className="task-comment-meta">
+                            <strong>{comment.author || 'Team'}</strong>
+                            <span>
+                              {comment.createdAt
+                                ? new Date(comment.createdAt).toLocaleString()
+                                : '—'}
+                            </span>
+                          </div>
+                          <div className="task-comment-text">{comment.text}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="task-section-empty">{t('taskCommentsEmpty')}</div>
+                  )}
+                  {isTeamUser ? (
+                    <div className="task-comment-compose">
+                      <textarea
+                        className="form-input"
+                        rows={3}
+                        value={taskCommentDraft}
+                        onChange={(e) => setTaskCommentDraft(e.target.value)}
+                        placeholder={t('taskCommentPlaceholder')}
+                        style={{ width: '100%', resize: 'vertical' }}
+                      />
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={addTaskComment}>
+                        {t('taskCommentAdd')}
+                      </button>
                     </div>
                   ) : null}
-                </div>
-                <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Toegewezen</div>
-                  <select
-                    className="form-input"
-                    value={taskEditForm.assignee}
-                    onChange={(e) => setTaskEditForm((prev) => ({ ...prev, assignee: e.target.value }))}
-                  >
-                    {teamMembers.map((m) => (
-                      <option key={m._id || m.name} value={m.name}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Deadline</div>
-                  <input
-                    type="date"
-                    className="form-input"
-                    value={taskEditForm.dueDate}
-                    onChange={(e) => {
-                      setTaskEditForm((prev) => ({ ...prev, dueDate: e.target.value }));
-                      setTaskEditErrors((prev) => {
-                        if (!prev.dueDate) return prev;
-                        const next = { ...prev };
-                        delete next.dueDate;
-                        return next;
-                      });
-                    }}
-                    style={taskEditErrors.dueDate ? newTaskErrBorder : undefined}
-                    aria-invalid={Boolean(taskEditErrors.dueDate)}
-                    aria-describedby={taskEditErrors.dueDate ? 'task-edit-due-err' : undefined}
-                  />
-                  {taskEditErrors.dueDate ? (
-                    <div id="task-edit-due-err" className="form-field-error" role="alert">
-                      {taskEditErrors.dueDate}
-                    </div>
-                  ) : null}
-                </div>
-                <div style={{ background: 'var(--bg-alt)', borderRadius: '8px', padding: '10px 12px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '6px' }}>Prioriteit</div>
-                  <select
-                    className="form-input"
-                    value={taskEditForm.priority}
-                    onChange={(e) => setTaskEditForm((prev) => ({ ...prev, priority: e.target.value }))}
-                  >
-                    <option value="High">{t('taskPriorityHigh')}</option>
-                    <option value="Normal">{t('taskPriorityNormal')}</option>
-                    <option value="Low">{t('taskPriorityLow')}</option>
-                  </select>
-                </div>
-              </div>
-              {taskModal.description && <p style={{ fontSize: '13px', color: 'var(--text-2)', marginBottom: '16px', padding: '12px', background: 'var(--bg-alt)', borderRadius: '8px' }}>{taskModal.description}</p>}
-              {(taskModal.checklist || []).length > 0 && (
-                <div style={{ marginBottom: '20px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '10px' }}>Checklist</div>
-                  {taskModal.checklist.map((item, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '10px', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-                      <div style={{ width: '16px', height: '16px', borderRadius: '4px', background: item.done ? 'var(--sage)' : 'white', border: `1.5px solid ${item.done ? 'var(--sage)' : 'var(--border)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: 'white' }}>{item.done ? '✓' : ''}</div>
-                      <div style={{ fontSize: '13px', textDecoration: item.done ? 'line-through' : 'none', color: item.done ? 'var(--text-3)' : 'var(--text)' }}>{item.text}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div>
-                <div style={{ fontSize: '10px', fontWeight: '700', letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '10px' }}>Verplaats naar</div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {COLS.map((col) => (
-                    <button
-                      key={col.id}
-                      type="button"
-                      className={`btn btn-sm ${taskModal.column === col.id ? 'btn-primary' : 'btn-ghost'}`}
-                      onClick={() => {
-                        updateMut.mutate({ id: taskModal._id, column: col.id });
-                        setTaskModal({ ...taskModal, column: col.id });
-                      }}
-                    >
-                      {t(col.id)}
-                    </button>
-                  ))}
-                </div>
+                </aside>
               </div>
             </div>
             <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-primary"
-                style={{ marginRight: 'auto' }}
-                onClick={() =>
-                  archiveMut.mutate({
-                    id: taskModal._id,
-                    archivedReason: taskModal.column === 'klaar' ? 'completed' : 'manual',
-                  })
-                }
-              >
-                {t('archive')}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => setConfirmDeleteTask(taskModal)}
-                disabled={softDeleteMut.isPending}
-                style={{ color: '#dc2626', borderColor: '#fecaca' }}
-              >
-                {t('delete')}
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={() => setTaskModal(null)}>{t('close')}</button>
-
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  const errors = {};
-                  if (!String(taskEditForm.clientId || '').trim()) {
-                    errors.clientId = t('taskValClientRequired');
-                  }
-                  if (!String(taskEditForm.dueDate || '').trim()) {
-                    errors.dueDate = t('taskValDueRequired');
-                  }
-                  if (Object.keys(errors).length) {
-                    setTaskEditErrors(errors);
-                    return;
-                  }
-                  const selectedClient = clients.find((c) => String(c._id) === String(taskEditForm.clientId));
-                  setCloseTaskModalOnUpdateSuccess(true);
-                  updateMut.mutate({
-                    id: taskModal._id,
-                    assignee: taskEditForm.assignee,
-                    dueDate: taskEditForm.dueDate,
-                    priority: taskEditForm.priority,
-                    clientId: taskEditForm.clientId || undefined,
-                    client: selectedClient?.name || '',
-                  });
-                }}
-                disabled={updateMut.isPending}
-                style={updateMut.isPending ? { display: 'inline-flex', alignItems: 'center', gap: '8px' } : undefined}
-              >
-                {updateMut.isPending ? (
-                  <>
-                    <LoadingSpinner size={18} />
-                    <span>{t('save')}</span>
-                  </>
-                ) : (
-                  t('save')
-                )}
-              </button>
+              {isTeamAdmin ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ marginRight: 'auto' }}
+                    onClick={() =>
+                      archiveMut.mutate({
+                        id: taskModal._id,
+                        archivedReason: taskModal.column === 'klaar' ? 'completed' : 'manual',
+                      })
+                    }
+                  >
+                    {t('archive')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => setConfirmDeleteTask(taskModal)}
+                    disabled={softDeleteMut.isPending}
+                    style={{ color: '#dc2626', borderColor: '#fecaca' }}
+                  >
+                    {t('delete')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => {
+                      const errors = {};
+                      if (!String(taskEditForm.clientId || '').trim()) {
+                        errors.clientId = t('taskValClientRequired');
+                      }
+                      if (!String(taskEditForm.dueDate || '').trim()) {
+                        errors.dueDate = t('taskValDueRequired');
+                      }
+                      if (Object.keys(errors).length) {
+                        setTaskEditErrors(errors);
+                        return;
+                      }
+                      const selectedClient = clients.find((c) => String(c._id) === String(taskEditForm.clientId));
+                      setCloseTaskModalOnUpdateSuccess(true);
+                      updateMut.mutate({
+                        id: taskModal._id,
+                        assignee: taskEditForm.assignee,
+                        dueDate: taskEditForm.dueDate,
+                        priority: taskEditForm.priority,
+                        description: taskEditForm.description,
+                        checklist: taskEditForm.checklist,
+                        links: taskEditForm.links,
+                        comments: taskEditForm.comments,
+                        clientId: taskEditForm.clientId || undefined,
+                        client: selectedClient?.name || '',
+                      });
+                    }}
+                    disabled={updateMut.isPending}
+                    style={updateMut.isPending ? { display: 'inline-flex', alignItems: 'center', gap: '8px' } : undefined}
+                  >
+                    {updateMut.isPending ? (
+                      <>
+                        <LoadingSpinner size={18} />
+                        <span>{t('save')}</span>
+                      </>
+                    ) : (
+                      t('save')
+                    )}
+                  </button>
+                  <button type="button" className="btn btn-ghost" onClick={() => setTaskModal(null)}>{t('close')}</button>
+                </>
+              ) : (
+                <button type="button" className="btn btn-ghost" onClick={() => setTaskModal(null)}>{t('close')}</button>
+              )}
             </div>
           </div>
         </div>

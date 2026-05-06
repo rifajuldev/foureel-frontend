@@ -63,6 +63,9 @@ export default function EventDayModal({ date, events = [], items, onClose, onAdd
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--text-3)' }}>
                         {item.perspectiveLabel || (item.kind === 'task' ? 'Task' : 'Workspace')}
+                        {item.kind === 'workspace' && item.perspectiveLabel === 'Shoot date' && item.shootTime
+                          ? ` · ${item.shootTime}`
+                          : ''}
                         {item.meta ? ` · ${item.meta}` : ''}
                       </div>
                     </div>
@@ -118,6 +121,32 @@ export default function EventDayModal({ date, events = [], items, onClose, onAdd
                     {timeDisp ? <span className="day-event-time">{timeDisp}</span> : null}
                   </div>
                   <div className="day-event-actions">
+                    {onEventClick ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm day-event-edit-btn"
+                        title={t('eventFormTitleEdit')}
+                        aria-label={t('eventFormTitleEdit')}
+                        onClick={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          onEventClick(e);
+                        }}
+                      >
+                        <span className="day-event-edit-icon" aria-hidden>
+                          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path
+                              d="M11.5 2.5l2 2-8 8H3.5v-2l8-8z"
+                              stroke="currentColor"
+                              strokeWidth="1.4"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <path d="M9.5 4.5l2 2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                      </button>
+                    ) : null}
                     {onDeleteEvent ? (
                       <button
                         type="button"

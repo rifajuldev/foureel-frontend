@@ -33,12 +33,27 @@ function TeamOnlyRoute({ user, children }) {
   return children;
 }
 
+function TeamSectionRoute({ user, allow, children }) {
+  if (user?.role !== 'team') return <Navigate to="/portaal" replace />;
+  const teamAccessLevel = user?.teamAccessLevel || 'editor';
+  if (!allow.includes(teamAccessLevel)) return <Navigate to={`${DASHBOARD_BASE}/workspace`} replace />;
+  return children;
+}
+
 /** `/login`: show form when logged out; send logged-in users to the right app area. */
 function LoginRoute() {
   const { user, loading } = useAuth();
   if (loading) return <FullScreenBrand />;
   if (user?.role === 'client') return <Navigate to="/portaal" replace />;
-  if (user?.role === 'team') return <Navigate to={DASHBOARD_BASE} replace />;
+  if (user?.role === 'team') {
+    const teamAccessLevel = user?.teamAccessLevel || 'editor';
+    return (
+      <Navigate
+        to={teamAccessLevel === 'admin' ? DASHBOARD_BASE : `${DASHBOARD_BASE}/workspace`}
+        replace
+      />
+    );
+  }
   return <LoginPage />;
 }
 
@@ -64,12 +79,54 @@ function AppRoutes() {
         path={`${DASHBOARD_BASE}/*`}
         element={role === 'client' ? <Navigate to="/portaal" replace /> : <Dashboard />}
       >
-        <Route index element={<HomeView />} />
-        <Route path="agenda" element={<AgendaView />} />
-        <Route path="klanten" element={<KlantenView />} />
-        <Route path="klanten/:clientId" element={<KlantenView />} />
-        <Route path="taken" element={<TakenView />} />
-        <Route path="archief" element={<ArchiefView />} />
+        <Route
+          index
+          element={(
+            <TeamSectionRoute user={user} allow={['admin']}>
+              <HomeView />
+            </TeamSectionRoute>
+          )}
+        />
+        <Route
+          path="agenda"
+          element={(
+            <TeamSectionRoute user={user} allow={['admin']}>
+              <AgendaView />
+            </TeamSectionRoute>
+          )}
+        />
+        <Route
+          path="klanten"
+          element={(
+            <TeamSectionRoute user={user} allow={['admin']}>
+              <KlantenView />
+            </TeamSectionRoute>
+          )}
+        />
+        <Route
+          path="klanten/:clientId"
+          element={(
+            <TeamSectionRoute user={user} allow={['admin']}>
+              <KlantenView />
+            </TeamSectionRoute>
+          )}
+        />
+        <Route
+          path="taken"
+          element={(
+            <TeamSectionRoute user={user} allow={['admin', 'editor']}>
+              <TakenView />
+            </TeamSectionRoute>
+          )}
+        />
+        <Route
+          path="archief"
+          element={(
+            <TeamSectionRoute user={user} allow={['admin']}>
+              <ArchiefView />
+            </TeamSectionRoute>
+          )}
+        />
         <Route
           path="workspace"
           element={(
@@ -86,8 +143,22 @@ function AppRoutes() {
             </TeamOnlyRoute>
           )}
         />
-        <Route path="checker" element={<VideoCheckerView />} />
-        <Route path="pulse" element={<PulseView />} />
+        <Route
+          path="checker"
+          element={(
+            <TeamSectionRoute user={user} allow={['admin']}>
+              <VideoCheckerView />
+            </TeamSectionRoute>
+          )}
+        />
+        <Route
+          path="pulse"
+          element={(
+            <TeamSectionRoute user={user} allow={['admin']}>
+              <PulseView />
+            </TeamSectionRoute>
+          )}
+        />
         <Route path="*" element={<Navigate to={DASHBOARD_BASE} replace />} />
       </Route>
       <Route path="/" element={<Navigate to={role === 'client' ? '/portaal' : DASHBOARD_BASE} replace />} />

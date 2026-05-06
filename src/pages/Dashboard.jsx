@@ -13,6 +13,7 @@ const DEFAULT_MEMBER_FORM = {
   password: '',
   name: '',
   teamRole: '',
+  teamAccessLevel: 'editor',
   color: '#C8953A',
 };
 const DEFAULT_EDIT_FORM = {
@@ -20,6 +21,7 @@ const DEFAULT_EDIT_FORM = {
   password: '',
   name: '',
   teamRole: '',
+  teamAccessLevel: 'editor',
   color: '#C8953A',
 };
 
@@ -215,7 +217,7 @@ export default function Dashboard() {
   const [editMemberForm, setEditMemberForm] = useState(DEFAULT_EDIT_FORM);
   const [editMemberErrors, setEditMemberErrors] = useState({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { logout, user } = useAuth();
+  const { logout, user, isTeamAdmin, canAccessDashboardSection } = useAuth();
   const { lang, setLang, t } = useLang();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -301,6 +303,7 @@ export default function Dashboard() {
       password: '',
       name: member?.name || '',
       teamRole: member?.teamRole || '',
+      teamAccessLevel: member?.teamAccessLevel || 'editor',
       color: member?.color || '#C8953A',
     });
     setEditMemberErrors({});
@@ -321,6 +324,7 @@ export default function Dashboard() {
       password: memberForm.password.trim(),
       name: memberForm.name.trim(),
       teamRole: memberForm.teamRole.trim(),
+      teamAccessLevel: memberForm.teamAccessLevel,
       color: memberForm.color,
     });
   };
@@ -343,6 +347,7 @@ export default function Dashboard() {
       email: editMemberForm.email.trim(),
       name: editMemberForm.name.trim(),
       teamRole: editMemberForm.teamRole.trim(),
+      teamAccessLevel: editMemberForm.teamAccessLevel,
       color: editMemberForm.color,
     };
     const password = editMemberForm.password.trim();
@@ -357,7 +362,7 @@ export default function Dashboard() {
   const visibleSections = NAV_SECTIONS
     .map((section) => ({
       ...section,
-      items: section.items.filter((item) => (item.id === 'workspace' ? isTeamUser : true)),
+      items: section.items.filter((item) => canAccessDashboardSection(item.id)),
     }))
     .filter((section) => section.items.length > 0);
 
@@ -459,8 +464,10 @@ export default function Dashboard() {
               EN
             </button>
           </div>
-          <div className="nav-section-label sidebar-team-heading">{t('team')}</div>
-          <div className="sidebar-team-panel">
+          {isTeamAdmin ? (
+            <>
+              <div className="nav-section-label sidebar-team-heading">{t('team')}</div>
+              <div className="sidebar-team-panel">
             <div className="sidebar-team-scroll" aria-busy={showTeamListSkeleton}>
               {teamError ? (
                 <div className="sidebar-team-msg" role="alert">
@@ -549,7 +556,9 @@ export default function Dashboard() {
                 </>
               )}
             </button>
-          </div>
+              </div>
+            </>
+          ) : null}
           <button type="button" className="sidebar-logout" onClick={() => setLogoutModalOpen(true)}>
             <svg
               className="sidebar-logout-icon"
@@ -656,6 +665,20 @@ export default function Dashboard() {
                     {memberFormErrors.teamRole}
                   </div>
                 ) : null}
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="team-add-access-level">
+                  Access level
+                </label>
+                <select
+                  id="team-add-access-level"
+                  className="form-select"
+                  value={memberForm.teamAccessLevel}
+                  onChange={(e) => patchMemberForm('teamAccessLevel', e.target.value)}
+                >
+                  <option value="admin">Admin</option>
+                  <option value="editor">Editor</option>
+                </select>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
@@ -819,6 +842,20 @@ export default function Dashboard() {
                   style={editMemberErrors.teamRole ? teamMemberErrBorder : undefined}
                 />
                 {editMemberErrors.teamRole ? <div className="form-field-error">{editMemberErrors.teamRole}</div> : null}
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="team-edit-access-level">
+                  Access level
+                </label>
+                <select
+                  id="team-edit-access-level"
+                  className="form-select"
+                  value={editMemberForm.teamAccessLevel}
+                  onChange={(e) => patchEditMemberForm('teamAccessLevel', e.target.value)}
+                >
+                  <option value="admin">Admin</option>
+                  <option value="editor">Editor</option>
+                </select>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" htmlFor="team-edit-color">

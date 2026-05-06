@@ -93,6 +93,7 @@ export const getArchivedTasks = (clientId) =>
   );
 export const createTask = (data) => req("POST", "/tasks", data);
 export const updateTask = (id, data) => req("PUT", `/tasks/${id}`, data);
+export const reorderTasks = (payload) => req("PATCH", "/tasks/reorder", payload);
 export const archiveTask = (id, archivedReason = "manual") =>
   req("POST", `/tasks/${id}/archive`, { archivedReason });
 export const restoreTask = (id) => req("POST", `/tasks/${id}/restore`);
@@ -141,6 +142,19 @@ export const markNotesRead = (clientId) =>
   req("POST", `/portal/${clientId}/notes/read`);
 export const getPortalUnreadSummary = () =>
   req("GET", "/portal/unread-summary");
+export const getPortalActivity = (params = {}) => {
+  const search = new URLSearchParams();
+  if (params.limit != null) search.set("limit", String(params.limit));
+  if (params.before) search.set("before", String(params.before));
+  const qs = search.toString();
+  return req("GET", `/portal/activity${qs ? `?${qs}` : ""}`);
+};
+export const presignPortalWhatsappUpload = (clientId, payload) =>
+  req("POST", `/portal/${clientId}/whatsapp/presign`, payload);
+export const createPortalWhatsappMessage = (clientId, payload) =>
+  req("POST", `/portal/${clientId}/whatsapp/messages`, payload);
+export const getPortalWhatsappMessages = (clientId) =>
+  req("GET", `/portal/${clientId}/whatsapp/messages`);
 
 // Portal (client side)
 export const getPortalMe = () => req("GET", "/portal/me");
